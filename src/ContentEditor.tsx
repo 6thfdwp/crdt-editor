@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { makeStyles } from '@material-ui/styles';
 
 import {
@@ -65,6 +65,11 @@ const ContentEditor = () => {
     (props: RenderLeafProps) => <Leaf {...props} />,
     []
   );
+
+  useEffect(() => {
+    editor.connect();
+    return editor.disconnect;
+  }, []);
 
   const classes = useStyles();
   return (

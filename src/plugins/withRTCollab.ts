@@ -17,122 +17,81 @@ import {
   NodeOperation,
   MoveNodeOperation,
 } from 'slate';
-import { pink } from '@material-ui/core/colors';
-import { clone } from 'lib0/decoding';
-import { Edit } from '@material-ui/icons';
+import { withWebsocket } from './withWebSocket';
+import { formYDocNodes, locateY, locateYParent } from './apply';
+import { toSlateOps } from './convert';
 
 // type SyncValue = Y.Array<Node>;
 // type SyncDoc = Y.Map<{ children: SyncValue }>;
 
-const initContent = [
-  { type: 'heading.h1', children: [{ text: 'Great Heading' }] },
-  {
-    type: 'paragraph',
-    children: [{ text: 'Start collaborating ' }, { text: 'SUPER', bold: true }],
-  },
-  {
-    type: 'ul-list',
-    children: [
-      { type: 'list-item', children: [{ text: 'i1' }] },
-      { type: 'list-item', children: [{ text: 'i2' }] },
-    ],
-  },
-];
-
-const formYDocNodes = (initContent: Node[]) => {
-  const formYXmlEl = (
-    childNodes: any, // (Y.XmlElement | Y.Text)[],
-    type: string,
-    attrs: { [key: string]: any }
-  ) => {
-    const yXmlEl = new Y.XmlElement(type);
-    console.log(
-      `[formYXmlEl] insert ${childNodes.length} childs under ${type}`
-    );
-    yXmlEl.insert(0, childNodes);
-    for (const k in attrs) {
-      yXmlEl.setAttribute(k, attrs[k]);
-    }
-    return yXmlEl;
-  };
-  const formYText = (tnode: Text) => {
-    const { text: textString, ...attrs } = tnode;
-    const ytext = new Y.Text();
-    console.log(`[formYText] insert ${textString}`, attrs);
-    ytext.insert(0, textString, attrs);
-
-    return ytext;
-  };
-  //
-  const transform = (node: Node) => {
-    if (node.text) {
-      return formYText(node as Text);
-    }
-    const { children, type, ...attrs } = node as Element;
-    const childNodes: (Y.XmlElement | Y.Text)[] = children.map((c) =>
-      transform(c)
-    );
-    return formYXmlEl(childNodes, type || 'ElType', attrs);
-  };
-
-  return initContent.map((n) => transform(n));
-};
-
-// export function withRTCollab<T extends Editor>(editor: T) {
+// export function withRTCollab<T extends Editor>(editor: T)
 export function withRTCollab(editor: Editor, initContent: Node[]) {
   const ydoc = new Y.Doc();
   // ydoc.gc = false;
   // const ydocNodes = ydoc.getXmlFragment('sync-doc');
   const ydocNodes = ydoc.getArray<Y.XmlElement | Y.Text>('sync-doc');
   ydocNodes.push(formYDocNodes(initContent));
-  // console.log(JSON.stringify(ydocNodes, null, 2));
+
   editor.doc = ydocNodes.doc;
   editor.ydocNodes = ydocNodes;
 
   const { onChange } = editor;
+  // apply Slate ops to Yjs doc on every change in editor
   editor.onChange = () => {
     const ops = editor.operations;
-    console.log('editor.onChange with ops count', ops.length);
-    console.log(
-      ops.map((op) => {
-        const { type, path, ...others } = op;
-        return { type, path, others: JSON.stringify(others) };
-      })
-    );
+    if (!editor.isRemote) {
+      console.log('editor.onChange with ops count', ops.length);
+      console.log(
+        ops.map((op) => {
+          const { type, path, ...others } = op;
+          return { type, path, others: JSON.stringify(others) };
+        })
+      );
+      applySlateOps(editor, ops);
+    }
 
-    applySlateOps(editor, ops);
     onChange();
-    console.log(`after ${ops.length} ops change: `);
-    console.log(JSON.stringify(editor.ydocNodes, null, 2));
+    // console.log(`after ${ops.length} ops change: `);
+    // console.log(JSON.stringify(editor.ydocNodes, null, 2));
   };
 
-  editor.receiveDoc = () => {};
-  editor.receiveOperation = () => {};
+  // apply YDoc change events on Slate
+  ydocNodes.observeDeep((events) => {
+    console.log(`# ydocNodes on observeing`);
+    applyYjsEvents(editor, events);
+  });
+
+  const endPoint =
+    process.env.NODE_ENV === 'production'
+      ? window.location.origin
+      : 'ws://localhost:1234';
+  withWebsocket(editor, ydoc, {
+    roomName: 'my-doc',
+    endPoint,
+  });
 
   return editor;
-
-  // const provider = new WebsocketProvider('wss://demos.yjs.dev', 'slate', ydoc);
-  // provider
-  // apply remote canges on slate and render
-  // ylist.observe(function updateSlateState() => {})
 }
 
-const locateY = (ydocNodes: Y.Array<any>, path: Path) => {
-  // const path = op.path;
-  let initial = ydocNodes;
-  return path.reduce((target: any, curPathIdx: number) => {
-    if (!target || !target.toArray) {
-      throw new Error(`path ${curPathIdx} does not match ydoc hierarchy `);
-    }
-    const yEls = target.toArray();
-    return yEls[curPathIdx];
-  }, initial);
-};
-const locateYParent = (ydocNodes: Y.Array<any>, path: Path) => {
-  // Path.parent(path)
-  return locateY(ydocNodes, Path.parent(path));
+// From remote Yjs -> Slate
+const applyYjsEvents = (editor: Editor, events: Y.YEvent[]) => {
+  const remoteEvents = events.filter((event) => !event.transaction.local);
+  if (remoteEvents.length == 0) {
+    return;
+  }
+
+  console.log(`[applyYjsEvents] receiving remote evennts..`);
+  console.log(events);
+
+  editor.isRemote = true;
+  Editor.withoutNormalizing(editor, () => {
+    console.log(`apply remote ${events.length} events`);
+    toSlateOps(remoteEvents).forEach((op) => editor.apply(op));
+  });
+  Promise.resolve().then(() => (editor.isRemote = false));
 };
 
+// From local Slate -> Yjs
 const applySlateOps = (editor: Editor, ops: Operation[]) => {
   const insertText = (op: TextOperation) => {
     const ytext: any = locateY(editor.ydocNodes, op.path);
@@ -313,8 +272,6 @@ const applySlateOps = (editor: Editor, ops: Operation[]) => {
       const clones = rNode.map((n: any) => cloneEl(n));
 
       const inject = new Y.XmlElement(op.properties.type);
-      // const t: any = new Y.Text('something to be figured out');
-      // console.log('split rNode', JSON.stringify(clones));
 
       inject.insert(0, clones);
       yParentEl.insert(pIdx + 1, [inject]);

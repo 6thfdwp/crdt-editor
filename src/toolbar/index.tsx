@@ -1,5 +1,5 @@
 import React, { ReactElement, ReactComponentElement } from 'react';
-import { Grid, IconButton } from '@material-ui/core';
+import { Grid, IconButton, Button } from '@material-ui/core';
 import { makeStyles } from '@material-ui/styles';
 import {
   FormatBoldOutlined,
